@@ -468,7 +468,7 @@ def rows():
         for l in list(open(os.path.join(ROOT, 'work', 'voice', cp), encoding='utf-8'))[1:]:
             dur[l.split('\t')[0]] = float(l.rstrip('\n').split('\t')[4])
     lines = []
-    for tv in ('voice_ko.tsv', 'voice_ko_battle.tsv', 'voice_ko_rival1.tsv', 'voice_ko_rival2.tsv'):
+    for tv in ('voice_ko.tsv', 'voice_ko_battle.tsv', 'voice_ko_rival1.tsv', 'voice_ko_rival2.tsv', 'voice_ko_story.tsv'):   # story = 스토리 리플레이 해설 78(2026-11-22)
         lines += list(open(os.path.join(ROOT, 'work', 'voice', tv), encoding='utf-8'))[1:]
     out = []
     for ln in lines:
