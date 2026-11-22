@@ -22,7 +22,7 @@ NAME_RULES = [
     (r'仁田', '니타', '닛타'), (r'左良', '좌량', '사라'),
 ]
 TAG_OVERRIDE = {}
-TAG_PICK = {'女の子': '여자애', '占い婆': '점쟁이 할멈', '男の声': '남자 목소리', '　女　': '여자', '子　供': '아이', '　子供　': '아이', 'サラリーマン': '샐러리맨'}   # 다수표 대신 정한 것
+TAG_PICK = {'女の子': '여자애', '占い婆': '점쟁이', '男の声': '남자 목소리', '　女　': '여자', '子　供': '아이', '　子供　': '아이', 'サラリーマン': '샐러리맨'}   # 다수표 대신 정한 것
 TAG_FIX = {'　正　': '타다시', '　男　': '남자', 'ギャラリー': '갤러리'}
 # 走り屋: 받침 있는 옛 표기 → 받침 없는 «레이서» (조사 바꿈)
 RUNNER_OLD = ('주행꾼', '주행족')
@@ -48,11 +48,11 @@ def mode(jp):
     return 'none'
 
 
-def reflow(jp, ko, corpus):
+def reflow(jp, ko, corpus, force=False):
     """넘치는 줄이 있을 때만 → (새 번역, 줄 수). 아니면 (ko, None)"""
     if '{0A}' in jp or re.search(r'(^|' + re.escape(N) + r')[\u3000 ]*・', jp): return ko, None
     lines = ko.split(N)
-    if all(cells(l) <= WIDTH for l in lines): return ko, None
+    if not force and all(cells(l) <= WIDTH for l in lines): return ko, None
     md = mode(jp); tag = ''
     if md == 'spk':
         m = re.match(r'【[^】]*】', lines[0])
@@ -65,7 +65,7 @@ def reflow(jp, ko, corpus):
         if lw and rw and rw[0] in TIGHT and corpus[lw[0] + rw[0]] > 0: text += b
         else: text += ' ' + b
     words = [w for w in text.split(' ') if w]
-    first_pre = tag if md == 'spk' else (IND if md == 'ind' else ''); next_pre = IND if md in ('spk', 'ind') else ''
+    first_pre = tag if md == 'spk' else (IND if md == 'ind' else ''); next_pre = (SP * cells(tag)) if md == 'spk' else (IND if md == 'ind' else '')   # 이름표 줄 다음 = 이름표 폭(【子供】 4칸 등)
     out = []; cur = first_pre; empty = True
     for w in words:
         cand = cur + w if empty else cur + ' ' + w
@@ -87,6 +87,22 @@ CHOICE_FIX = {'・あたりを見る': '・주변을 둘러본다', '・あた�
               '・自信はあるけどね': '・자신은 있지만', '・秋目峠、ダウンヒルで勝負': '・아키메 고개, 다운힐로 승부',
               '・秋目峠、ヒルクライムで勝負': '・아키메 고개, 힐클라임으로 승부',
               '・車が出来る日まで、スキップ': '・차 나올 때까지 건너뛴다', '・しょうがないのでバイトする': '・어쩔 수 없으니 알바한다'}   # 원문 «・あたり»는 이 장소만 잘림
+
+
+def fix_tag_indent(jp, ko):
+    """이름표 대사 다음 줄 들여쓰기 = 번역 이름표 폭 — 원문에서 «들여쓰기 = 원문 이름표 폭»인 줄만(원문 2976/2985).
+    이름표를 3칸으로 맞추면(【子供】→【아　이】) 원문 4칸 들여쓰기가 남아 한 칸 어긋났음(2026-11-22 실기)"""
+    mj = re.match(r'【[^】]*】', jp); mk = re.match(r'【[^】]*】', ko)
+    if not (mj and mk): return ko
+    tj, tk = cells(mj.group(0)), cells(mk.group(0))
+    jl, kl = jp.split(N), ko.split(N)
+    if len(jl) != len(kl): return ko
+    out = [kl[0]]
+    for j, k in zip(jl[1:], kl[1:]):
+        ij = len(j) - len(j.lstrip(SP))
+        if ij == tj and k.strip(SP + ' '): k = SP * tk + k.lstrip(SP + ' ')
+        out.append(k)
+    return N.join(out)
 
 
 def fix_quotes(jp, ko):
@@ -112,6 +128,26 @@ def rows(d):
             if not l.strip(): continue
             c = l.split('\t'); out[(os.path.basename(p), c[0])] = c
     return out, heads
+
+
+def _bat(ch):
+    o = ord(ch) - 0xAC00
+    return None if not (0 <= o < 11172) else o % 28            # 0 = 받침 없음, 8 = ㄹ
+
+
+def term_replace(ko, a, b):
+    """낱말 a → b 바꾸면서 바로 뒤 조사를 b 받침에 맞춤(휘발유가 → 가솔린이, 2026-11-22 «가솔린가»)"""
+    ba, bb = _bat(a[-1]), _bat(b[-1])
+    alts = sorted({x for pair in JOSA for x in pair}, key=len, reverse=True)
+    def sub(m):
+        j = m.group(1) or ''
+        if not j or bb is None: return b + j
+        for bat, nob in JOSA:
+            if j in (bat, nob):
+                if (bat, nob) == ('으로', '로'): return b + ('로' if bb in (0, 8) else '으로')
+                return b + (nob if bb == 0 else bat)
+        return b + j
+    return re.sub(re.escape(a) + r'(' + '|'.join(re.escape(x) for x in alts) + r')?(?=[^가-힣]|$)', sub, ko).replace(a, b)
 
 
 def fix_runner(jp, ko):
@@ -180,7 +216,7 @@ def main():
         k1 = ko.replace('?,', '?').replace('!,', '!')
         if k1 != ko: why.append('겹친 부호'); ko = k1
         for cond, a, b in TERM_RULES:
-            if re.search(cond, jp) and a in ko: ko = ko.replace(a, b); why.append('용어 %s→%s' % (a, b))
+            if re.search(cond, jp) and a in ko: ko = term_replace(ko, a, b); why.append('용어 %s→%s' % (a, b))
         k1 = ko.replace('ㅡ', 'ー').replace('−', 'ー')                 # 장음을 자모·수학 빼기로 쓴 것 → 원문 장음 ー(글꼴에 있음)
         if k1 != ko: why.append('장음ー'); ko = k1
         if key in MANUAL: ko = MANUAL[key][0]; why.append('손 수정: ' + MANUAL[key][1])
@@ -189,6 +225,8 @@ def main():
             if len(jl) == len(kl):
                 k1 = BSN.join(CHOICE_FIX.get(j, k) for j, k in zip(jl, kl))
                 if k1 != ko: why.append('선택지 통일'); ko = k1
+        k1 = fix_tag_indent(jp, ko)
+        if k1 != ko: why.append('이름표 들여쓰기'); ko = k1
         if key[0] != 'coder_exe.tsv':
             k1, nl = reflow(jp, ko, CORPUS)
             if nl is not None and k1 != ko:
@@ -226,7 +264,13 @@ def main():
             if m.group(1) != want:
                 ko = ko[:m.start(1)] + want + ko[m.end(1):]; unify[(j, m.group(1), want)] += 1
         if ko != c[ki]:
-            first = c[ki]; c[ki] = ko
+            first = c[ki]
+            ko = fix_tag_indent(jp, ko)                                       # 이름표 폭이 바뀌면 들여쓰기·접기 다시(점쟁이 할멈)
+            if key[0] != 'coder_exe.tsv':
+                k1, nl = reflow(jp, ko, CORPUS, force=len(ko.split(N)) != len(jp.split(N)))   # 이름표 폭이 바뀌어 원문보다 줄이 많으면 다시 접음
+                if nl is not None: ko = k1
+                if nl is not None and nl > 3: OVER.append((key[0], key[1], nl, jp, ko))
+            c[ki] = ko
             log.append((key[0], key[1], '이름표 통일', first, ko))
     for (j, a, b), n in sorted(unify.items(), key=lambda t: -t[1]):
         if a.replace(SP, '') != b.replace(SP, '') : print('  이름표 통일 %s: %s → %s (%d)' % (j, a, b, n))
