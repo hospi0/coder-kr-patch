@@ -30,11 +30,11 @@ def main():
         if not c: ok = False; print('  ✗', msg)
     # ① 리터럴
     g = lambda b, a, base: struct.unpack_from('>I', b, a - base)[0]
-    chk(g(k, H.VBO_LIT, H.KBASE) == lab['vbo'] and g(k, H.END_LIT, H.KBASE) == lay['TPL'] | 0x80000000 and g(k, H.BSS_LIT, H.KBASE) == lay['END'], '커널 리터럴')
+    chk(g(k, H.VBO_LIT, H.KBASE) == lab['vbo'] and g(k, H.END_LIT, H.KBASE) == lay['TPL'] | 0x80000000 and g(k, H.BSS_LIT, H.KBASE) == lay['END'] and g(k, H.HEAP_END_LIT, H.KBASE) == lay['LBASE'], '커널 리터럴(힙 끝 포함)')
     chk(all(g(r, L, H.RBASE) == lab['vwrap'] for L in H.EVT_LITS), 'RACE 표 칸')
     chk(k[:H.BSS0 - H.KBASE] == bytes(a ^ b ^ a for a, b in zip(kern, kern)) or True, '')
     diff = [i for i in range(len(kern)) if k[i] != kern[i]]
-    chk(all(any(L - H.KBASE <= i < L - H.KBASE + 4 for L in (H.VBO_LIT, H.END_LIT, H.BSS_LIT)) or H.LOAD_FN - H.KBASE <= i < H.LOAD_FN - H.KBASE + 12 for i in diff), '커널: 리터럴 3개·읽기 머리 밖 바뀜')
+    chk(all(any(L - H.KBASE <= i < L - H.KBASE + 4 for L in (H.VBO_LIT, H.END_LIT, H.BSS_LIT, H.HEAP_END_LIT)) or H.LOAD_FN - H.KBASE <= i < H.LOAD_FN - H.KBASE + 12 for i in diff), '커널: 리터럴 4개·읽기 머리 밖 바뀜')
     chk(not any(k[H.BSS0 - H.KBASE:H.BLOCK - H.KBASE]), '커널 BSS 앞부분 0')
     # 블록 올리기(커널 BSS 지우기는 블록 뒤부터라 그대로 남음)
     blk = k[H.BLOCK - H.KBASE:lay['END'] - H.KBASE]
@@ -45,15 +45,20 @@ def main():
     def fake_load(rr, mm):                                   # 0x0600C4F8 로 들어옴: otail 이 r8~r12 를 쌓았고 r8 = LOAD_R8
         nm = bytes(mm.r8(rr[4] + i) for i in range(16)).split(bytes(1))[0].decode('latin1')
         loads.append((nm, rr[5], rr[6], rr[8]))
-        if nm == H.SUBFILE:
-            for i in range(0, len(ld), 4): mm.w32(rr[5] + i, struct.unpack_from('>I', ld, i)[0])
+        for fnm, dat in ((H.SUBFILE, ld), (H.SUBFILE2, lay['LD2'])):
+            if nm == fnm:
+                for i in range(0, len(dat), 4): mm.w32(rr[5] + i, struct.unpack_from('>I', dat, i)[0])
         for n in (12, 11, 10, 9, 8): rr[n] = mm.r32(rr[15]); rr[15] += 4
-    chk(not any(lram[H.LBASE - 0x00200000:H.LBASE - 0x00200000 + len(ld)]), '하위 RAM 구역이 스테이트에서 0')
+    LB = lay['LBASE']
+    for base, n, nm in ((LB, len(ld), 'A'), (H.CBASE, len(lay['LD2']), 'C')):      # 새 커널에선 힙이 안 쓰는 자리 — 원본 커널 스테이트의 힙 끝 머리·옛 자막 자료는 지우고 보고만
+        o = base - 0x00200000; nz = [i for i in range(0, n, 16) if any(lram[o + i:o + i + 16])]
+        if nz: print('  (자료 %s 자리에 스테이트 값 %d줄 — 첫 0x%06X, 지우고 흉내)' % (nm, len(nz), base + nz[0]))
+        for i in range(n): lram[o + i] = 0
     S.run(m, lab['lwrap'], regs=[0, 0, 0, 0, 0x06001000, 0x06002000, 0x1234, 0x7777, 0x5555, 0x6666, 0, 0, 0xCCCC], calls={H.LOAD_BACK: fake_load})
-    chk([(a, b, c) for a, b, c, _ in loads][:1] == [(H.SUBFILE, H.LBASE, len(ld))] and loads[1][1:3] == (0x06002000, 0x1234) and all(x[3] == H.LOAD_R8 for x in loads), '첫 읽기 감싸기 %r' % loads)
+    chk([(a, b, c) for a, b, c, _ in loads][:2] == [(H.SUBFILE, LB, len(ld)), (H.SUBFILE2, H.CBASE, len(lay['LD2']))] and loads[2][1:3] == (0x06002000, 0x1234) and all(x[3] == H.LOAD_R8 for x in loads), '첫 읽기 감싸기 %r' % loads)
     loads.clear(); S.run(m, lab['lwrap'], regs=[0, 0, 0, 0, 0x06001000, 0x06002000, 0x1234], calls={H.LOAD_BACK: fake_load})
     chk(len(loads) == 1 and loads[0][1] == 0x06002000, '둘째 읽기는 바로 %r' % loads)
-    chk(bytes(lram[H.LBASE - 0x00200000:H.LBASE - 0x00200000 + len(ld)]) == ld, '자막 자료가 하위 RAM 에')
+    chk(bytes(lram[LB - 0x00200000:LB - 0x00200000 + len(ld)]) == ld and bytes(lram[H.CBASE - 0x00200000:H.CBASE - 0x00200000 + len(lay['LD2'])]) == lay['LD2'], '자막 자료 두 개가 하위 RAM 에')
     pri0 = m.r16(H.SH + 0xF2); vpri0 = struct.unpack_from('>H', vreg, 0xF2)[0]
     orig = []; calls = {H.EVT_FN: lambda rr, mm: orig.append((rr[4], rr[5], rr[6], rr[7], rr[8])), H.VBO_ORIG: lambda rr, mm: None}
     def wrap(name):
@@ -101,7 +106,8 @@ def main():
     # ④ 표 밖 이름
     wrap(clips[0][0]); chk(m.r32(H.VAR) == 0, '표 안 이름'); frame()
     wrap('CRREP08'); chk(m.r32(H.VAR) == 0xFFFFFFFF, '표 밖 이름 → 끔'); chk(frame() == 0x8000, '표 밖 → END')
-    m.w32(H.LBASE, 0); wrap(clips[0][0]); chk(m.r32(H.VAR) == 0xFFFFFFFF, '자막 자료 없으면 끔'); m.w32(H.LBASE, H.LMAGIC)
+    m.w32(LB, 0); wrap(clips[0][0]); chk(m.r32(H.VAR) == 0xFFFFFFFF, '자막 자료 A 없으면 끔'); m.w32(LB, H.LMAGIC)
+    m.w32(H.CBASE, 0); wrap(clips[0][0]); chk(m.r32(H.VAR) == 0xFFFFFFFF, '자막 자료 C 없으면 끔'); m.w32(H.CBASE, H.CMAGIC)
     print('검산 %s — 클립 %d · 글자 %d' % ('통과' if ok else '실패', len(clips), len(advs)))
 
 

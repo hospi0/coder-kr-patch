@@ -30,10 +30,11 @@ if __name__ == '__main__':
     assert len(nd) <= len(rd('NAMEDIC.FNT')); files['NAMEDIC.FNT'] = nd
     # 리플레이 음성 자막(tools/voicesub.py, 2026-11-22): 0KERNL.BIN 늘림(블록 0x06037800~) + RACE.EXE 처리기 표 2칸
     files['0KERNL.BIN'], files['RACE.EXE'], files[voicesub.SUBFILE], _, vlay = voicesub.patch(rd('0KERNL.BIN'), files.get('RACE.EXE') or rd('RACE.EXE'))
+    files[voicesub.SUBFILE2] = vlay['LD2']                               # 자료 C(열쇠표·폭·글꼴·쪽 C) — 2026-11-22 자리 옮김
     print('음성 자막 상주 0x%08X~0x%08X · 자료 %s %d B' % (voicesub.BLOCK, vlay['END'], voicesub.SUBFILE, len(files[voicesub.SUBFILE])))
     for k, v in files.items():
         o = rd(k)
-        if k not in ('NAMEDIC.FNT', 'ADV_CNDT.DAT', '0KERNL.BIN', voicesub.SUBFILE) and not k.startswith('ADV_MG') and k != 'ADV_EVMG.DAT': assert len(o) == len(v), k
+        if k not in ('NAMEDIC.FNT', 'ADV_CNDT.DAT', '0KERNL.BIN', voicesub.SUBFILE, voicesub.SUBFILE2) and not k.startswith('ADV_MG') and k != 'ADV_EVMG.DAT': assert len(o) == len(v), k
     print('조합 훅 스텁 ADV.EXE+%#x · NAMEDIC %d B(코드 %#x)' % (at, len(nd), name_hook.CODE_OFF))
     os.makedirs(os.path.dirname(DST), exist_ok=True)
     isopatch.patch(SRC, DST, files); isopatch.verify(DST, files)

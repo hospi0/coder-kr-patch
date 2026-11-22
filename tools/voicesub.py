@@ -49,7 +49,13 @@ assert LUTO == 0x68800 and CMDV + 0x60 <= 0x68900
 TEX = 0x25C00000 + TEXO; LUT = 0x25C00000 + LUTO
 COMP = 0x06040700                                  # 그림 만들 곳(커널 BSS 안, 31장 모두 0 · 자막 중에만 씀)
 BLOCK2 = 0x0604C100; BLOCK2_MAX = 0x06050000   # (옛 2구역 — 디스크 읽기로 바꾼 뒤 안 씀)
-LBASE = 0x002DE300; LMAX = 0x002F3F00               # 자막 자료(열쇠표·쪽·폭·글꼴) — 하위 RAM, 스테이트 35장 모두 0 · 부팅 때 디스크에서 한 번 읽음
+HEAP_END = 0x002F4000; HEAP_END_LIT = 0x06004280; LFLOOR = 0x002F0000   # 하위 RAM 힙(0x200000~0x2F4000, 커널 시작 0x06004124 에서 한 번 초기화) 끝 인자
+LBASE = LFLOOR; LMAX = HEAP_END                     # 자료 A(쪽) = 힙 끝을 LBASE 로 낮춰 힙이 안 쓰게 한 자리. ★옛 0x2DE300 은 힙 안이라 스토리 리플레이에서 덮여 크래시(2026-11-22)
+BLOCK_SAFE = 0x0603B000                             # 블록 쪽 B 한도 — 0x06037800~0x0603B800 = SGL 작업 버퍼 64 B×256(원본 31장 모두 0), 위 2 KB 는 남김
+CBASE = 0x002FC800; CMAX = 0x00300000               # 자료 C(열쇠표·폭·글꼴) — 음성 이름 목록(0x2F4000~0x2FC19C, ALLLDX.HDC 33,180 B) 위, 스테이트 37장 모두 0
+CMAGIC = 0x43525343                                 # 'CRSC'
+SUBFILE2 = 'CDR_BIB.TXT'                            # 자료 C 를 담는 파일(원래 = 디스크 서지 설명문, 게임이 안 읽음)
+GESC = 0xF0                                         # 글자 번호: < 0xF0 이면 1바이트, 아니면 2바이트(0xF0|번호>>8, 번호&0xFF) — 글꼴은 많이 쓰는 순
 LMAGIC = 0x43525344                                 # 'CRSD'
 SUBFILE = 'CDR_ABS.TXT'                             # 자막 자료를 담는 파일(원래 = 디스크 설명문, 게임이 안 읽음)
 LOAD_FN = 0x0600C4EC; LOAD_R8 = 0x060225EA          # 커널 파일 읽기(r4 = 이름, r5 = 버퍼, r6 = 크기) · 머리 리터럴 0x0600C60C 값
@@ -162,7 +168,8 @@ def code(lay):
     # ── vwrap(r4 = 해석기, r5 = 명령): 이름(+6) → 열쇠 → 표에서 찾으면 cur 0·쪽 목록, 없으면 cur −1 → 원래 처리기(r4~r7 그대로)
     a.L('vwrap'); a.pushpr()
     for n in (4, 5, 6, 7, 8): a.push(n)
-    a.ld(1, LBASE); a.ldl(1, 0); a.ld(2, LMAGIC); a.cmpeq(2, 0); a.bfar('bf', 'vnf')   # 자막 자료가 안 읽혔으면 자막 없이
+    a.ld(1, lay['LBASE']); a.ldl(1, 0); a.ld(2, LMAGIC); a.cmpeq(2, 0); a.bfar('bf', 'vnf')   # 자막 자료가 안 읽혔으면 자막 없이
+    a.ld(1, CBASE); a.ldl(1, 0); a.ld(2, CMAGIC); a.cmpeq(2, 0); a.bfar('bf', 'vnf')
     a.mov(5, 1); a.addi(6, 1)
     a.ldbd(1, 1); a.cmpeqi(ord('_')); a.br('bt', 'vsp')                                 # «M_F_151» 관중
     a.ldbd(3, 1); a.cmpeqi(ord('B')); a.br('bt', 'vrv')                                 # «MA0B0_19» 레이스 중 라이벌
@@ -214,8 +221,8 @@ def code(lay):
     a.L('vfind'); a.ld(1, lay['KTAB']); a.ld(2, lay['NK'])
     a.L('vl2'); a.tst(2, 2); a.bfar('bt', 'vnf')
     a.ldw(1, 0); a.extuw(0, 0); a.cmpeq(8, 0); a.br('bt', 'vf')
-    a.addi(8, 1); a.addi(-1, 2); a.br('bra', 'vl2'); a.nop()
-    a.L('vf'); a.ldld(4, 1, 8)                                                            # r8 = 쪽 목록
+    a.addi(4, 1); a.addi(-1, 2); a.br('bra', 'vl2'); a.nop()
+    a.L('vf'); a.br('bsr', 'kdec'); a.nop()                                               # r8 = 쪽 목록
     a.ld(1, VAR); a.movi(-1, 0); a.stl(0, 1)                                              # 고르는 동안 그리지 않게
     a.br('bsr', 'pal'); a.nop()
     a.ld(1, lay['ST']); a.movi(0, 0); a.stl(0, 1)
@@ -231,7 +238,8 @@ def code(lay):
     a.movi(1, 0); a.stl(0, 1)
     a.pushpr()
     for n in (4, 5, 6, 7): a.push(n)
-    a.ld(4, lay['LNAME']); a.ld(5, LBASE); a.ld(6, lay['LSIZE']); a.br('bsr', 'otail'); a.nop()
+    a.ld(4, lay['LNAME']); a.ld(5, lay['LBASE']); a.ld(6, lay['LSIZE']); a.br('bsr', 'otail'); a.nop()
+    a.ld(4, lay['LNAME2']); a.ld(5, CBASE); a.ld(6, lay['CSIZE']); a.br('bsr', 'otail'); a.nop()
     for n in (7, 6, 5, 4): a.pop(n)
     a.poppr()
     a.L('otail')                                                                          # 원래 머리(덮은 부분) 그대로 하고 0x0600C4F8 로
@@ -256,8 +264,8 @@ def code(lay):
     a.ld(1, lay['KTAB']); a.ld(2, lay['NK'])
     a.L('al'); a.tst(2, 2); a.br('bt', 'ao')
     a.ldw(1, 0); a.extuw(0, 0); a.cmpeq(8, 0); a.br('bt', 'af')
-    a.addi(8, 1); a.addi(-1, 2); a.br('bra', 'al'); a.nop()
-    a.L('af'); a.ldld(4, 1, 8)
+    a.addi(4, 1); a.addi(-1, 2); a.br('bra', 'al'); a.nop()
+    a.L('af'); a.br('bsr', 'kdec'); a.nop()
     a.ld(1, VAR); a.movi(-1, 0); a.stl(0, 1)
     a.br('bsr', 'pal'); a.nop()
     a.ld(1, lay['ST']); a.movi(0, 0); a.stl(0, 1)
@@ -265,6 +273,12 @@ def code(lay):
     a.L('ao')
     for n in (8, 7, 6, 5, 4): a.pop(n)
     a.poppr(); a.ld(0, ADX_FN); a.jmp(0); a.nop()
+    a.ltorg()
+    # ── kdec(r1 = 열쇠표 칸): 값 v = @(2,r1) → r8 = 지역 바탕(v>>14: 0 PA · 1 PB · 2 PC) + (v&0x3FFF)*2
+    a.L('kdec'); a.mov(1, 0); a.addi(2, 0); a.ldw(0, 8); a.extuw(8, 8)
+    a.ld(2, lay['PA']); a.ld(3, 0x4000); a.tst(3, 8); a.br('bt', 'kd1'); a.ld(2, lay['PB'])
+    a.L('kd1'); a.ld(3, 0x8000); a.tst(3, 8); a.br('bt', 'kda'); a.ld(2, lay['PC'])
+    a.L('kda'); a.ld(3, 0x3FFF); a.and_(3, 8); a.shll(8); a.add(2, 8); a.rts(); a.nop()
     a.ltorg()
     # ── vbo: sub → 원래 처리기
     a.L('vbo'); a.pushpr(); a.br('bsr', 'sub'); a.nop(); a.ld(0, VBO_ORIG); a.jsr(0); a.nop(); a.poppr(); a.rts(); a.nop()
@@ -279,9 +293,9 @@ def code(lay):
     a.ldld(4, 6, 3); a.addi(1, 3); a.stld(3, 4, 6)                                       # r3 = 프레임
     a.ldld(12, 6, 1); a.tst(1, 1); a.br('bt', 'kill')
     a.ldwp(1, 5); a.extuw(5, 5)                                                           # r5 = 쪽 수, r1 = 첫 쪽
+    a.cmppz(3); a.br('bf', 'gap')                                                        # 명령 뒤 DELAY 동안(프레임 < 0)
     a.L('pl'); a.tst(5, 5); a.br('bt', 'kill')
-    a.ldwd(2, 1); a.cmpge(0, 3); a.br('bf', 'gap')
-    a.ldwd(4, 1); a.cmpgt(3, 0); a.br('bt', 'found')
+    a.ldwd(2, 1); a.cmpgt(3, 0); a.br('bt', 'found')                                       # 쪽 머리 = 크기·끝 프레임·줄 수
     a.ldwd(0, 1); a.extuw(0, 0); a.add(0, 1); a.addi(-1, 5); a.br('bra', 'pl'); a.nop()
     a.L('found')
     a.ldld(8, 6, 0); a.cmpeq(1, 0); a.br('bt', 'patch')
@@ -355,8 +369,8 @@ def code(lay):
     a.ld(1, COMP); a.ld(2, BMPSZ // 4); a.movi(0, 0)
     a.L('rc'); a.stl(0, 1); a.addi(4, 1); a.dt(2); a.br('bf', 'rc')
     a.ld(1, lay['ST']); a.stl(14, 1)
-    a.mov(14, 0); a.addi(16, 0); a.stld(0, 4, 1)
-    a.ldwd(6, 14); a.extuw(0, 0); a.stld(0, 8, 1)
+    a.mov(14, 0); a.addi(6, 0); a.stld(0, 4, 1)                                           # 쪽 머리 6 B(크기·끝·줄 수)
+    a.ldwd(4, 14); a.extuw(0, 0); a.stld(0, 8, 1)
     a.movi(0, 0); a.stld(0, 12, 1)
     for n in (14, 13, 12, 11, 10, 9, 8): a.pop(n)
     a.rts(); a.nop()
@@ -369,12 +383,14 @@ def code(lay):
     a.L('s0'); a.tst(13, 13); a.br('bf', 'shg')
     a.ld(1, lay['ST']); a.ldld(8, 1, 0); a.tst(0, 0); a.br('bt', 'sdone')
     a.addi(-1, 0); a.stld(0, 8, 1)
-    a.ldwp(12, 8); a.extuw(8, 8); a.ldwp(12, 0); a.extuw(0, 0); a.stld(0, 20, 1); a.ldwp(12, 13); a.extuw(13, 13)
+    a.mov(0, 2); a.ldbp(12, 8); a.extub(8, 8); a.ldbp(12, 13); a.extub(13, 13)           # 줄 머리 = x·글자 수(바이트)
+    a.movi(LY[1], 0); a.tst(2, 2); a.br('bt', 'sy'); a.movi(LY[0], 0)                       # y = 마지막 줄이면 아래 줄 자리
+    a.L('sy'); a.stld(0, 20, 1)
     a.br('bra', 's0'); a.nop()
     a.L('shg'); a.ld(1, lay['ST']); a.ldld(24, 1, 0); a.tst(0, 0); a.br('bt', 'spause')
     a.addi(-1, 0); a.stld(0, 24, 1)
     a.ldld(20, 1, 9)
-    a.ldw(12, 0); a.extuw(0, 0)
+    a.br('bsr', 'gidx'); a.nop()                                                          # r0 = 글자 번호(1·2바이트)
     a.mov(0, 1); a.shll2(1); a.shll2(0); a.shll(0); a.add(1, 0)                           # 번호×12
     a.ld(10, lay['FONT']); a.add(0, 10); a.movi(FROWS, 11); a.addi(FROW0, 9)
     a.mov(10, 0); a.addi(FROWS, 0); a.ldw(0, 0); a.shll16(0); a.ld(1, lay['ST']); a.stld(0, 28, 1)
@@ -396,14 +412,20 @@ def code(lay):
     a.pop(4); a.mov(9, 5); a.movi(2, 6); a.movi(0, 7); a.br('bsr', 'pix'); a.nop()
     a.L('gskip'); a.addi(1, 4); a.tst(14, 14); a.br('bf', 'gcol')
     a.L('gnext'); a.addi(1, 9); a.dt(11); a.br('bf', 'grow')
-    a.ldw(12, 0); a.extuw(0, 0); a.shll(0); a.ld(1, lay['ADV']); a.add(0, 1); a.ldw(1, 0); a.extuw(0, 0); a.add(0, 8)
-    a.addi(2, 12); a.addi(-1, 13); a.br('bra', 's0'); a.nop()
+    a.br('bsr', 'gidx'); a.nop(); a.mov(1, 3)                                             # r0 = 번호, r3 = 바이트 수
+    a.ld(1, lay['ADV']); a.ldbx(1, 2); a.extub(2, 2); a.add(2, 8)                          # 폭 1바이트
+    a.add(3, 12); a.addi(-1, 13)
+    a.br('bra', 's0'); a.nop()
     a.L('spause'); a.stld(12, 4, 1); a.stld(13, 12, 1); a.stld(8, 16, 1); a.movi(0, 0); a.br('bra', 'sret'); a.nop()
     a.L('sdone'); a.movi(1, 0)
     a.L('sret'); a.poppr()
     for n in (14, 13, 12, 11, 10, 9, 8): a.pop(n)
     a.rts(); a.nop()
     a.ltorg()
+    a.L('gidx'); a.ldb(12, 0); a.extub(0, 0); a.mov(0, 1); a.shlr2(1); a.shlr2(1); a.movi(15, 2); a.cmpeq(2, 1)
+    a.br('bf', 'g1'); a.andi(0x0F); a.shll8(0); a.mov(12, 1); a.addi(1, 1); a.ldb(1, 1); a.extub(1, 1); a.or_(1, 0)
+    a.movi(2, 1); a.rts(); a.nop()
+    a.L('g1'); a.movi(1, 1); a.rts(); a.nop()
     a.L('pix'); a.ld(0, W_); a.cmphs(0, 4); a.br('bt', 'pret'); a.movi(H_, 0); a.cmphs(0, 5); a.br('bt', 'pret')
     assert ROWB == 120
     a.mov(5, 0); a.shll(0); a.shll2(0); a.shll2(0); a.shll2(0)                              # r0 = y×128
@@ -421,14 +443,14 @@ def code(lay):
 
 
 # ───────── 자료 ─────────
-def build_font(chars):
+def build_font(chars, order=None):
     """갈무리9 비트맵(한글 잉크 윗선 정렬) — 없는 글자만 나눔고딕 1비트 (게임 천국 그대로)"""
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np
     g = bdf.Font(GALMURI)
     ys = [y for c in '가각힣맑앙' for x, y in g.draw(c)[0]]
     top, bot = min(ys), max(ys); off = -top + max(0, (GROWS - (bot - top + 1)) // 2)
-    order = sorted(chars); idx = {c: i for i, c in enumerate(order)}
+    order = order or sorted(chars); idx = {c: i for i, c in enumerate(order)}
     bits, advs, miss = [], [], []
     for c in order:
         rows = [0] * GROWS
@@ -483,8 +505,10 @@ def rows():
 def build_data():
     """→ (글자 번호, 글꼴, 폭, [(클립, 쪽 목록 바이트, 쪽들)])"""
     rs = rows()
-    chars = set(''.join(ko for *_, ko in rs)) | {' '}
-    idx, bits, advs = build_font(chars)
+    import collections
+    freq = collections.Counter(''.join(ko for *_, ko in rs)); freq[' '] += 0
+    order = sorted(freq, key=lambda c: (-freq[c], c))                                     # 많이 쓰는 글자 먼저(앞 0xF0 자 = 1바이트)
+    idx, bits, advs = build_font(set(order), order)
     W = lambda s: sum(advs[idx[c]] for c in s)
     out = []
     for clip, d, ko in rs:
@@ -498,17 +522,21 @@ def build_data():
         for f0, f1, g in pages:
             ys = LY if len(g) == 2 else LY[1:]
             lines = [((W_ - W(l)) // 2, y, [idx[c] for c in l]) for l, y in zip(g, ys)]
-            pb = struct.pack('>7H', f0, f1, len(lines), 0, 0, 0, 0)
+            pb = struct.pack('>2H', f1, len(lines))                                           # 쪽 머리 = 크기·끝·줄 수(6 B), 시작 = 앞 쪽 끝
             for x, y, gl in lines:
-                pb += struct.pack('>3H', x, y, len(gl)) + b''.join(struct.pack('>H', k) for k in gl)
+                gb = b''.join(bytes([k]) if k < GESC else bytes([GESC | k >> 8, k & 0xFF]) for k in gl)
+                assert 0 <= x < 256 and len(gl) < 256
+                pb += bytes([x, len(gl)]) + gb                                               # 줄 머리 = x·글자 수, y 는 줄 순서
+            pb += b'\0' * (len(pb) & 1)                                                       # 쪽은 짝수 자리
             pb = struct.pack('>H', 2 + len(pb)) + pb
             body += pb; pp.append((f0, f1, lines))
         out.append((clip, body, pp))
     return idx, bits, advs, out
 
 
-def layout(nfont, nk, pages_len):
-    names = ('KTAB', 'NK', 'TPL', 'ST', 'TSH', 'TCN', 'TDC', 'FONT', 'ADV', 'BKIND', 'RPFX', 'LFLAG', 'LNAME', 'LSIZE')
+def layout(nfont, nk, plen_b, asize=0x800, lbase=HEAP_END - 0x800, plen_c=0):
+    """상주 블록 = 코드·표 + 쪽 B(자료 A 에 안 들어간 것) · 자료 A(하위 RAM 0x2F0000) = 머리 16 B + 쪽 A · 자료 C(0x2FC800) = 머리 16 B + 열쇠표 4 B 칸 + 폭 1 B + 글꼴"""
+    names = ('KTAB', 'NK', 'TPL', 'ST', 'TSH', 'TCN', 'TDC', 'FONT', 'ADV', 'BKIND', 'RPFX', 'LFLAG', 'LNAME', 'LSIZE', 'PA', 'PB', 'LNAME2', 'CSIZE', 'LBASE', 'PC')
     tmp = {k: 0x0A0B0C00 + 0x10 * i for i, k in enumerate(names)}
     n0 = len(code(tmp).build())
     lay = {'NK': nk}; p = (CODE + n0 + 31) & ~31
@@ -519,31 +547,45 @@ def layout(nfont, nk, pages_len):
     lay['RPFX'] = p; p += 2 * len(RPFX) + 2
     lay['LFLAG'] = p; p += 4
     lay['LNAME'] = p; p += 16
+    lay['LNAME2'] = p; p += 16
+    lay['PB'] = (p + 3) & ~3; p = lay['PB'] + plen_b
     lay['END'] = (p + 15) & ~15
-    q = LBASE + 16                                       # 하위 RAM 자료: 머리 16 B('CRSD'·크기) · 열쇠표 · 폭 · 글꼴 · 쪽
-    lay['KTAB'] = q; q += 8 * nk
-    lay['ADV'] = q; q += (2 * nfont + 3) & ~3
+    lay['LBASE'] = lbase; lay['PA'] = lbase + 16
+    lay['LSIZE'] = asize; lay['LEND'] = lbase + asize
+    q = CBASE + 16
+    lay['KTAB'] = q; q += 4 * nk
+    lay['ADV'] = q; q += (nfont + 3) & ~3
     lay['FONT'] = q; q += FONT_B * nfont
-    lay['PAGES'] = q; q += (pages_len + 3) & ~3
-    lay['LEND'] = (q + 2047) & ~2047; lay['LSIZE'] = lay['LEND'] - LBASE
-    a = code(lay); c = a.build(); assert len(c) == n0
-    assert lay['END'] <= BLOCK_MAX, ('블록이 0x0603D300 을 넘음', hex(lay['END']))
-    assert lay['LEND'] <= LMAX, ('자막 자료가 하위 RAM 빈 구역을 넘음', hex(lay['LEND']))
+    lay['PC'] = (q + 3) & ~3; q = lay['PC'] + plen_c                # 자료 C 남는 자리에도 쪽
+    lay['CEND'] = (q + 2047) & ~2047; lay['CSIZE'] = lay['CEND'] - CBASE
+    a = code(lay); c = a.build(); assert len(c) <= n0, (len(c), n0)          # 실제 값이 겹치면 리터럴 풀이 줄 수 있음
+    assert lay['END'] <= BLOCK_SAFE, ('블록(코드+쪽 B)이 한도를 넘음', hex(lay['END']))
+    assert lay['LEND'] == HEAP_END and lbase >= LFLOOR, ('자료 A 가 힙 위 자리(0x2F0000~0x2F4000)를 넘음', hex(lbase))
+    assert lay['CEND'] <= CMAX, ('자료 C 가 0x300000 을 넘음', hex(lay['CEND']))
     assert COMP + BMPSZ <= 0x06042700 and lay['END'] <= COMP
     return lay, a, c
 
 
 def build_block(data):
-    """→ (상주 블록 바이트, 자막 자료 파일 바이트, 라벨, 배치)"""
+    """→ (상주 블록 바이트, 자료 A 파일, 라벨, 배치) — 자료 C 파일은 lay['LD2']"""
     idx, bits, advs, clips = data
-    body = b''; offs = {}; seen = {}
+    seen = {}; order = []
     for clip, b, _ in clips:                         # 같은 쪽 목록(같은 번역·길이)은 한 벌
-        if b not in seen:
-            seen[b] = len(body); body += b + (b'\0\0' if len(b) & 2 else b'')
-        offs[clip] = seen[b]
-    lay, a, c = layout(len(advs), len(clips), len(body))
+        if b not in seen: seen[b] = None; order.append(b)
+    pre, _, _ = layout(len(advs), len(clips), 0)
+    capb = BLOCK_SAFE - pre['PB'] - 16               # 블록 쪽 B → 자료 C 남는 자리 → 넘치는 것만 자료 A(힙 줄임)
+    capc = CMAX - pre['PC'] - 16
+    pa = b''; pbb = b''; pcc = b''; where = {}
+    for b in order:
+        assert len(b) % 2 == 0
+        if len(pbb) + len(b) <= capb: where[b] = (1, len(pbb)); pbb += b
+        elif len(pcc) + len(b) <= capc: where[b] = (2, len(pcc)); pcc += b
+        else: where[b] = (0, len(pa)); pa += b
+    asize = (16 + len(pa) + 2047) & ~2047
+    lay, a, c = layout(len(advs), len(clips), len(pbb), asize, HEAP_END - asize, len(pcc))
+    assert len(pa) // 2 < 0x4000 and len(pbb) // 2 < 0x4000 and len(pcc) // 2 < 0x4000
     blk = bytearray(lay['END'] - BLOCK)
-    blk[0:4] = b'CRV2'
+    blk[0:4] = b'CRV3'
     struct.pack_into('>I', blk, SAVEPRI - BLOCK, 0xFFFFFFFF)
     struct.pack_into('>4I', blk, VAR - BLOCK, 0xFFFFFFFF, 0, 0, 0)
     blk[LOCC - BLOCK:LOCC - BLOCK + 32] = struct.pack('>16H', 0x000A, *[0] * 15)
@@ -556,14 +598,18 @@ def build_block(data):
     blk[lay['BKIND'] - BLOCK:lay['BKIND'] - BLOCK + len(BKIND)] = BKIND.encode()
     blk[lay['RPFX'] - BLOCK:lay['RPFX'] - BLOCK + 2 * len(RPFX)] = ''.join(RPFX).encode()
     blk[lay['LNAME'] - BLOCK:lay['LNAME'] - BLOCK + len(SUBFILE)] = SUBFILE.encode()
-    L = bytearray(lay['LSIZE']); o = lambda ad: ad - LBASE
-    struct.pack_into('>II', L, 0, LMAGIC, lay['LSIZE'])
-    keys = sorted((clip_key(clip), clip) for clip, _, _ in clips)
-    assert len({k for k, _ in keys}) == len(keys)
-    for k, (key, clip) in enumerate(keys):
-        struct.pack_into('>HHI', L, o(lay['KTAB']) + 8 * k, key, 0, lay['PAGES'] + offs[clip])
-    L[o(lay['PAGES']):o(lay['PAGES']) + len(body)] = body
-    for i, w in enumerate(advs): struct.pack_into('>H', L, o(lay['ADV']) + 2 * i, w)
+    blk[lay['LNAME2'] - BLOCK:lay['LNAME2'] - BLOCK + len(SUBFILE2)] = SUBFILE2.encode()
+    blk[lay['PB'] - BLOCK:lay['PB'] - BLOCK + len(pbb)] = pbb
+    A_ = bytearray(asize); struct.pack_into('>II', A_, 0, LMAGIC, asize); A_[16:16 + len(pa)] = pa
+    C_ = bytearray(lay['CSIZE']); o = lambda ad: ad - CBASE
+    struct.pack_into('>II', C_, 0, CMAGIC, lay['CSIZE'])
+    keys = sorted((clip_key(clip), clip, b) for clip, b, _ in clips)
+    assert len({k for k, _, _ in keys}) == len(keys)
+    for k, (key, clip, b) in enumerate(keys):
+        reg, off = where[b]
+        struct.pack_into('>HH', C_, o(lay['KTAB']) + 4 * k, key, reg << 14 | off // 2)
+    for i, w in enumerate(advs):
+        assert 0 < w < 256; C_[o(lay['ADV']) + i] = w
     f = o(lay['FONT'])
     for i, g in enumerate(bits):
         assert not any(g[:2 * FROW0]) and not any(g[2 * (FROW0 + FROWS):]), ('글꼴 줄이 저장 범위 밖', i)
@@ -571,8 +617,10 @@ def build_block(data):
         assert not any(w & 0x7F for w in rw), ('글꼴이 9열을 넘음', i)
         m9 = 0
         for k, w in enumerate(rw): m9 |= ((w >> 7) & 1) << (15 - k)
-        L[f + FONT_B * i:f + FONT_B * (i + 1)] = bytes(w >> 8 for w in rw) + struct.pack('>H', m9)
-    return bytes(blk), bytes(L), a.lab, lay
+        C_[f + FONT_B * i:f + FONT_B * (i + 1)] = bytes(w >> 8 for w in rw) + struct.pack('>H', m9)
+    C_[o(lay['PC']):o(lay['PC']) + len(pcc)] = pcc
+    lay['LD2'] = bytes(C_)
+    return bytes(blk), bytes(A_), a.lab, lay
 
 
 def patch(kernel, race, data=None):
@@ -581,7 +629,7 @@ def patch(kernel, race, data=None):
     blk, ldata, lab, lay = build_block(data)
     k = bytearray(kernel); r = bytearray(race)
     assert len(k) == BSS0 - KBASE, '0KERNL.BIN 크기가 원본과 다름'
-    for L, fn, nm in ((VBO_LIT, VBO_ORIG, lab['vbo']), (END_LIT, END_ORIG, lay['TPL'] | 0x80000000), (BSS_LIT, BSS0, lay['END'])):
+    for L, fn, nm in ((VBO_LIT, VBO_ORIG, lab['vbo']), (END_LIT, END_ORIG, lay['TPL'] | 0x80000000), (BSS_LIT, BSS0, lay['END']), (HEAP_END_LIT, HEAP_END, lay['LBASE'])):
         assert struct.unpack_from('>I', k, L - KBASE)[0] == fn, hex(L); struct.pack_into('>I', k, L - KBASE, nm)
     # 파일 읽기 머리 0x0600C4EC: push r8·r9·r10·r11 · mov.l @(lit),r8 · push r12 → «mov.l @(1,pc),r0 / jmp @r0 / nop / nop / lwrap»
     o = LOAD_FN - KBASE
@@ -617,5 +665,6 @@ if __name__ == '__main__':
     d = build_data()
     kern = open(os.path.join(ROOT, 'work', 'iso', '0KERNL.BIN'), 'rb').read(); race = open(os.path.join(ROOT, 'work', 'iso', 'RACE.EXE'), 'rb').read()
     k, r, ld, lab, lay = patch(kern, race, d)
-    print('자막 클립 %d · 글자 %d · 상주 0x%08X~0x%08X(한도 0x%08X) · 자료 %s %d B → 0x%08X~0x%08X(한도 0x%08X) · 0KERNL %d → %d B · 코드 %d B' % (
-        len(d[3]), len(d[2]), BLOCK, lay['END'], BLOCK_MAX, SUBFILE, len(ld), LBASE, lay['LEND'], LMAX, len(kern), len(k), lay['TPL'] - CODE))
+    print('자막 클립 %d · 글자 %d · 상주 0x%08X~0x%08X(한도 0x%08X, 쪽 B 0x%08X~) · 자료 A %s %d B → 0x%08X~0x%08X(한도 0x%08X) · 자료 C %s %d B → 0x%08X~0x%08X(한도 0x%08X) · 코드 %d B' % (
+        len(d[3]), len(d[2]), BLOCK, lay['END'], BLOCK_SAFE, lay['PB'], SUBFILE, len(ld), lay['LBASE'], lay['LEND'], LMAX, SUBFILE2, len(lay['LD2']), CBASE, lay['CEND'], CMAX, lay['TPL'] - CODE))
+    print('  하위 RAM 힙 끝 0x%06X → 0x%06X (힙 %d B 줄임)' % (HEAP_END, lay['LBASE'], HEAP_END - lay['LBASE']))
